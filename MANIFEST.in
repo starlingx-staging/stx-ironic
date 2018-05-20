@@ -1,0 +1,24 @@
+include babel.cfg
+include ChangeLog
+include CONTRIBUTING.rst
+include LICENSE
+include README.rst
+include openstack-common.conf
+include run_tests.sh
+include setup.cfg
+include setup.py
+include tox.ini
+include etc/*
+include ironic/db/sqlalchemy/alembic.ini
+include ironic/db/sqlalchemy/alembic/script.py.mako
+include ironic/db/sqlalchemy/alembic/env.py
+include ironic/api/app.wsgi
+recursive-include ironic/db/sqlalchemy/alembic/versions *
+recursive-include ironic/drivers/modules *
+graft bin
+graft doc
+graft ironic/tests
+graft tools
+graft examples
+recursive-include ironic *.json *.xml *.cfg *.pem README *.po *.mo *.sql *.ini
+global-exclude *.pyc *.sdx *.log *.db *.swp ironic/tests/tmp/*

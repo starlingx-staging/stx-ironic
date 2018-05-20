@@ -199,7 +199,7 @@ def _filter_active_conductors(query, interval=None):
     return query
 
 
-@profiler.trace_cls("db_api")
+#@profiler.trace_cls("db_api")
 class Connection(api.Connection):
     """SqlAlchemy connection."""
 

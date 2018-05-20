@@ -12,9 +12,11 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+from keystonemiddleware.auth_token import _opts as keystone_auth_token_opts
 from oslo_config import cfg
-
 from ironic.common.i18n import _
+
+AUTHTOKEN_GROUP = 'keystone_authtoken'
 
 opts = [
     cfg.StrOpt('region_name',
@@ -25,3 +27,5 @@ opts = [
 
 def register_opts(conf):
     conf.register_opts(opts, group='keystone')
+    # WRS: Enable usage of keystone_authtoken
+    conf.register_opts(keystone_auth_token_opts._OPTS, group=AUTHTOKEN_GROUP)

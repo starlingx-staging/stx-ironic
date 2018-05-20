@@ -42,11 +42,16 @@ conductor, such as building or tearing down the TFTP environment for a node,
 notifying Neutron of a change, etc.
 """
 
+
 import collections
 import datetime
 import tempfile
 
 import eventlet
+
+import json
+
+import requests
 from futurist import periodics
 from futurist import waiters
 from ironic_lib import metrics_utils
@@ -61,6 +66,7 @@ from ironic.common import exception
 from ironic.common.glance_service import service_utils as glance_utils
 from ironic.common.i18n import _
 from ironic.common import images
+from ironic.common import keystone
 from ironic.common import states
 from ironic.common import swift
 from ironic.conductor import base_manager
@@ -68,6 +74,7 @@ from ironic.conductor import notification_utils as notify_utils
 from ironic.conductor import task_manager
 from ironic.conductor import utils
 from ironic.conf import CONF
+from ironic.conf import keystone as keystoneauth
 from ironic.drivers import base as drivers_base
 from ironic.drivers import hardware_type
 from ironic import objects
@@ -122,7 +129,11 @@ class ConductorManager(base_manager.BaseConductorManager):
                  fields were specified when they should not be.
         :raises: DriverNotFound if the driver or hardware type is not found.
         """
-        LOG.debug("RPC create_node called for node %s.", node_obj.uuid)
+        LOG.info('Register controller with host_mapping using' 
+                 ' os-service/create to allow ironic to use Cells API\n')
+        register_nova_ironic_compute()
+
+        LOG.info("RPC create_node called for node %s.", node_obj.uuid)
         driver_factory.check_and_update_node_interfaces(node_obj)
         node_obj.create()
         return node_obj
@@ -3071,3 +3082,60 @@ def _do_inspect_hardware(task):
                    "state %(state)s") % {'state': new_state})
         handle_failure(error)
         raise exception.HardwareInspectionFailure(error=error)
+
+
+# WRS: Register Nova-ironic compute service. The purpose of this
+# is to create a host_mapping entry for the nova-compute started
+# on host 'controller' as part of enabling ironic services
+def register_nova_ironic_compute():
+    # Create a keystone session
+    try:
+        keystone_session = keystone.get_keystone_session(
+                           keystoneauth.AUTHTOKEN_GROUP)
+        LOG.debug("kc session created successfully\n")
+    except Exception as e:
+        msg = _('Cannot connect to keystone client')
+        LOG.error(msg)
+        raise exception.IronicException(e)
+
+    # Get keystone token_id
+    token_id = keystone_session.get_token()
+
+    # Get compute service internal_url
+    compute_url = keystone.get_service_url(keystone_session, 
+                                           service_type='compute',
+                                           endpoint_type='internal')
+    # Send the Rest API commands
+    _send_compute_osservice_create(token_id, compute_url)
+
+
+# WRS: Build and send Nova REST API Commands to register the compute-service
+def _send_compute_osservice_create(token_id, compute_url):
+    timeout = 3
+    compute_api_post = '{}/{}'.format(compute_url, '/os-services/create')
+    payload = {'binary': 'nova-compute',
+               'host': 'controller'}
+    try:
+        r = requests.put(compute_api_post,
+                         data=json.dumps(payload),
+                         headers={'Content-Type': 'application/json',
+                         'X-Auth-Token': token_id},
+                         timeout=timeout 
+                        )
+    except requests.RequestException as e:
+        msg = (_('Error invoking api %(api)s. Error: %(error)s') %
+                {'api': compute_api_post, 'error': e}
+              )
+        LOG.error(msg)
+        raise exception.IronicException(msg)
+
+    try:
+        r.json()
+    except Exception as ex:
+        msg = (_('Unable to decode response as JSON.\n'
+                 'Response status code: %(rsp-code)s\n'
+                 'Response: %(response)s\n'
+                 'Error: %(ex)s') %
+               {'rsp-code': r.status_code, 'response': r.text, 'ex': ex})
+        LOG.error(msg)
+        raise exception.IronicException(msg)        

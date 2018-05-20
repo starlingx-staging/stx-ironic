@@ -16,6 +16,7 @@
 
 from keystoneauth1 import exceptions as kaexception
 from keystoneauth1 import loading as kaloading
+from keystoneauth1 import session
 from oslo_log import log as logging
 import six
 
@@ -47,6 +48,17 @@ def ks_exceptions(f):
                           {'msg': six.text_type(e)})
             raise exception.KeystoneFailure(six.text_type(e))
     return wrapper
+
+
+@ks_exceptions
+def get_keystone_session(group):
+    # Get keystone credentials from ironic.conf
+    try:
+        auth = get_auth(group)
+        keystone_session = session.Session(auth=auth)
+    except Exception as ex:
+        raise exception.KeystoneFailure(six.text_type(ex))
+    return keystone_session
 
 
 @ks_exceptions
