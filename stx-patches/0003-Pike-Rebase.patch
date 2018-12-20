@@ -1,0 +1,182 @@
+From 9da104f3047dca265bad92d662704152f10e38e0 Mon Sep 17 00:00:00 2001
+From: Shoaib Nasir <shoaib.nasir@windriver.com>
+Date: Thu, 21 Dec 2017 19:09:04 -0500
+Subject: [PATCH 3/3] Pike Rebase           Register nova-ironic
+ compute service as part of ironic           node creation          
+ 'keystone_authtoken' group registered in conf to make it           usable to
+ create keystone session
+
+---
+ ironic/common/keystone.py   | 12 ++++++++
+ ironic/conductor/manager.py | 70 ++++++++++++++++++++++++++++++++++++++++++++-
+ ironic/conf/keystone.py     |  6 +++-
+ 3 files changed, 86 insertions(+), 2 deletions(-)
+
+diff --git a/ironic/common/keystone.py b/ironic/common/keystone.py
+index 706ac45..fcce17d 100644
+--- a/ironic/common/keystone.py
++++ b/ironic/common/keystone.py
+@@ -16,6 +16,7 @@
+ 
+ from keystoneauth1 import exceptions as kaexception
+ from keystoneauth1 import loading as kaloading
++from keystoneauth1 import session
+ from oslo_log import log as logging
+ import six
+ 
+@@ -50,6 +51,17 @@ def ks_exceptions(f):
+ 
+ 
+ @ks_exceptions
++def get_keystone_session(group):
++    # Get keystone credentials from ironic.conf
++    try:
++        auth = get_auth(group)
++        keystone_session = session.Session(auth=auth)
++    except Exception as ex:
++        raise exception.KeystoneFailure(six.text_type(ex))
++    return keystone_session
++
++
++@ks_exceptions
+ def get_session(group, **session_kwargs):
+     """Loads session object from options in a configuration file section.
+ 
+diff --git a/ironic/conductor/manager.py b/ironic/conductor/manager.py
+index fae7d56..0f8805a 100644
+--- a/ironic/conductor/manager.py
++++ b/ironic/conductor/manager.py
+@@ -42,11 +42,16 @@ conductor, such as building or tearing down the TFTP environment for a node,
+ notifying Neutron of a change, etc.
+ """
+ 
++
+ import collections
+ import datetime
+ import tempfile
+ 
+ import eventlet
++
++import json
++
++import requests
+ from futurist import periodics
+ from futurist import waiters
+ from ironic_lib import metrics_utils
+@@ -61,6 +66,7 @@ from ironic.common import exception
+ from ironic.common.glance_service import service_utils as glance_utils
+ from ironic.common.i18n import _
+ from ironic.common import images
++from ironic.common import keystone
+ from ironic.common import states
+ from ironic.common import swift
+ from ironic.conductor import base_manager
+@@ -68,6 +74,7 @@ from ironic.conductor import notification_utils as notify_utils
+ from ironic.conductor import task_manager
+ from ironic.conductor import utils
+ from ironic.conf import CONF
++from ironic.conf import keystone as keystoneauth
+ from ironic.drivers import base as drivers_base
+ from ironic.drivers import hardware_type
+ from ironic import objects
+@@ -122,7 +129,11 @@ class ConductorManager(base_manager.BaseConductorManager):
+                  fields were specified when they should not be.
+         :raises: DriverNotFound if the driver or hardware type is not found.
+         """
+-        LOG.debug("RPC create_node called for node %s.", node_obj.uuid)
++        LOG.info('Register controller with host_mapping using' 
++                 ' os-service/create to allow ironic to use Cells API\n')
++        register_nova_ironic_compute()
++
++        LOG.info("RPC create_node called for node %s.", node_obj.uuid)
+         driver_factory.check_and_update_node_interfaces(node_obj)
+         node_obj.create()
+         return node_obj
+@@ -3071,3 +3082,60 @@ def _do_inspect_hardware(task):
+                    "state %(state)s") % {'state': new_state})
+         handle_failure(error)
+         raise exception.HardwareInspectionFailure(error=error)
++
++
++# Register Nova-ironic compute service. The purpose of this
++# is to create a host_mapping entry for the nova-compute started
++# on host 'controller' as part of enabling ironic services
++def register_nova_ironic_compute():
++    # Create a keystone session
++    try:
++        keystone_session = keystone.get_keystone_session(
++                           keystoneauth.AUTHTOKEN_GROUP)
++        LOG.debug("kc session created successfully\n")
++    except Exception as e:
++        msg = _('Cannot connect to keystone client')
++        LOG.error(msg)
++        raise exception.IronicException(e)
++
++    # Get keystone token_id
++    token_id = keystone_session.get_token()
++
++    # Get compute service internal_url
++    compute_url = keystone.get_service_url(keystone_session, 
++                                           service_type='compute',
++                                           endpoint_type='internal')
++    # Send the Rest API commands
++    _send_compute_osservice_create(token_id, compute_url)
++
++
++# Build and send Nova REST API Commands to register the compute-service
++def _send_compute_osservice_create(token_id, compute_url):
++    timeout = 3
++    compute_api_post = '{}/{}'.format(compute_url, '/os-services/create')
++    payload = {'binary': 'nova-compute',
++               'host': 'controller'}
++    try:
++        r = requests.put(compute_api_post,
++                         data=json.dumps(payload),
++                         headers={'Content-Type': 'application/json',
++                         'X-Auth-Token': token_id},
++                         timeout=timeout 
++                        )
++    except requests.RequestException as e:
++        msg = (_('Error invoking api %(api)s. Error: %(error)s') %
++                {'api': compute_api_post, 'error': e}
++              )
++        LOG.error(msg)
++        raise exception.IronicException(msg)
++
++    try:
++        r.json()
++    except Exception as ex:
++        msg = (_('Unable to decode response as JSON.\n'
++                 'Response status code: %(rsp-code)s\n'
++                 'Response: %(response)s\n'
++                 'Error: %(ex)s') %
++               {'rsp-code': r.status_code, 'response': r.text, 'ex': ex})
++        LOG.error(msg)
++        raise exception.IronicException(msg)        
+diff --git a/ironic/conf/keystone.py b/ironic/conf/keystone.py
+index 981e648..636f1df 100644
+--- a/ironic/conf/keystone.py
++++ b/ironic/conf/keystone.py
+@@ -12,10 +12,12 @@
+ # License for the specific language governing permissions and limitations
+ # under the License.
+ 
++from keystonemiddleware.auth_token import _opts as keystone_auth_token_opts
+ from oslo_config import cfg
+-
+ from ironic.common.i18n import _
+ 
++AUTHTOKEN_GROUP = 'keystone_authtoken'
++
+ opts = [
+     cfg.StrOpt('region_name',
+                help=_('The region used for getting endpoints of OpenStack'
+@@ -25,3 +27,5 @@ opts = [
+ 
+ def register_opts(conf):
+     conf.register_opts(opts, group='keystone')
++    # Enable usage of keystone_authtoken
++    conf.register_opts(keystone_auth_token_opts._OPTS, group=AUTHTOKEN_GROUP)
+-- 
+2.7.4
+

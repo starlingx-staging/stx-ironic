@@ -1,0 +1,25 @@
+From d83b6b8fd62863c24b6d9a001355d0d4244d7249 Mon Sep 17 00:00:00 2001
+From: Shoaib Nasir <shoaib.nasir@windriver.com>
+Date: Sun, 3 Dec 2017 21:51:12 -0500
+Subject: [PATCH 2/3] Pike rebase: disable profiler for ironic dbsync
+
+---
+ ironic/db/sqlalchemy/api.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ironic/db/sqlalchemy/api.py b/ironic/db/sqlalchemy/api.py
+index c2c39f0..981d246 100644
+--- a/ironic/db/sqlalchemy/api.py
++++ b/ironic/db/sqlalchemy/api.py
+@@ -199,7 +199,7 @@ def _filter_active_conductors(query, interval=None):
+     return query
+ 
+ 
+-@profiler.trace_cls("db_api")
++#@profiler.trace_cls("db_api")
+ class Connection(api.Connection):
+     """SqlAlchemy connection."""
+ 
+-- 
+2.7.4
+
